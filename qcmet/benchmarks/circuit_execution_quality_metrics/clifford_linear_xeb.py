@@ -133,13 +133,17 @@ class CliffordLinearXEB(LinearXEB):
         return basis
 
     @staticmethod
-    def probability_of_bitstring(stabilizer_state: StabilizerState, bitstring: str) -> float:
-        """Return one computational-basis probability from a stabilizer tableau."""
+    def _diagonal_stabilizer_constraints(
+        stabilizer_state: StabilizerState,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Return the (z_masks, signs) pair describing the diagonal stabilizer subgroup.
+
+        This is the circuit-dependent, bitstring-independent part of computing a
+        computational-basis probability from a stabilizer tableau, so it is computed
+        once per circuit.
+        """
         num_qubits = stabilizer_state.num_qubits
         assert num_qubits is not None
-
-        if len(bitstring) != num_qubits or set(bitstring) - {"0", "1"}:
-            raise ValueError("bitstring must contain one binary digit per qubit")
 
         clifford = stabilizer_state.clifford
         stabilizer_x = np.asarray(clifford.stab_x, dtype=np.uint8)
@@ -149,23 +153,38 @@ class CliffordLinearXEB(LinearXEB):
         # A product of stabilizers is diagonal in the computational basis iff
         # its combined X support vanishes.
         z_only_basis = CliffordLinearXEB._gf2_nullspace(stabilizer_x.T)
-        raw_bits = np.asarray([int(bit) for bit in bitstring], dtype=np.uint8)
 
-        for combination in z_only_basis:
+        z_masks = np.zeros((len(z_only_basis), num_qubits), dtype=np.uint8)
+        signs = np.ones(len(z_only_basis), dtype=np.int64)
+        for row, combination in enumerate(z_only_basis):
             product = Pauli("I" * num_qubits)
             for index, selected in enumerate(combination):
                 if selected:
                     product = product.compose(Pauli(stabilizer_labels[index]))
 
-            label = product.to_label()
-            sign = -1 if label.startswith("-") else 1
-            z_mask = stabilizer_z.T @ combination % 2
-            eigenvalue = sign * (-1) ** int(np.dot(z_mask, raw_bits) % 2)
-            if eigenvalue != 1:
-                return 0.0
+            signs[row] = -1 if product.to_label().startswith("-") else 1
+            z_masks[row] = stabilizer_z.T @ combination % 2
 
-        num_constraints = len(z_only_basis)
-        return 2.0 ** (-(num_qubits - num_constraints))
+        return z_masks, signs
+
+    @staticmethod
+    def probability_of_bitstring(stabilizer_state: StabilizerState, bitstring: str) -> float:
+        """Return one computational-basis probability from a stabilizer tableau."""
+        num_qubits = stabilizer_state.num_qubits
+        assert num_qubits is not None
+
+        if len(bitstring) != num_qubits or set(bitstring) - {"0", "1"}:
+            raise ValueError("bitstring must contain one binary digit per qubit")
+
+        z_masks, signs = CliffordLinearXEB._diagonal_stabilizer_constraints(stabilizer_state)
+        raw_bits = np.asarray([int(bit) for bit in bitstring], dtype=np.uint8)
+
+        parity = (z_masks @ raw_bits % 2).astype(np.int64)
+        eigenvalues = signs * (-1) ** parity
+        if np.any(eigenvalues != 1):
+            return 0.0
+
+        return 2.0 ** (-(num_qubits - len(signs)))
 
     def _ideal_probabilities(self,
                              circuit: QuantumCircuit,
@@ -177,25 +196,30 @@ class CliffordLinearXEB(LinearXEB):
         )
         assert circuit_without_measurements is not None
         stabilizer_state = StabilizerState(circuit_without_measurements)
+        num_qubits = stabilizer_state.num_qubits
+        assert num_qubits is not None
+
+        if not observed_bitstrings:
+            return {}
+
+        # Computed once per circuit: this used to be recomputed (at O(n^3) cost,
+        # including a full stabilizer-tableau relabeling) for every single observed
+        # bitstring, which dominated runtime for large qubit counts / shot counts.
+        z_masks, signs = self._diagonal_stabilizer_constraints(stabilizer_state)
+        base_probability = 2.0 ** (-(num_qubits - len(signs)))
+
+        bits_matrix = np.asarray(
+            [[int(bit) for bit in bitstring] for bitstring in observed_bitstrings],
+            dtype=np.uint8,
+        )
+        parity = ((bits_matrix @ z_masks.T) % 2).astype(np.int64)
+        eigenvalues = signs[np.newaxis, :] * (-1) ** parity
+        satisfies_all_constraints = np.all(eigenvalues == 1, axis=1)
 
         return {
-            bitstring: self.probability_of_bitstring(
-                stabilizer_state,
-                bitstring,
-            )
-            for bitstring in observed_bitstrings
+            bitstring: (base_probability if satisfied else 0.0)
+            for bitstring, satisfied in zip(observed_bitstrings, satisfies_all_constraints)
         }
-
-    def _ideal_collision_probability(self, circuit: QuantumCircuit) -> float:
-        """Return the ideal sum of squared computational-basis probabilities."""
-        circuit_without_measurements = circuit.remove_final_measurements(
-            inplace=False
-        )
-        assert circuit_without_measurements is not None
-        stabilizer_state = StabilizerState(circuit_without_measurements)
-        stabilizer_x = np.asarray(stabilizer_state.clifford.stab_x, dtype=np.uint8)
-        num_constraints = len(self._gf2_nullspace(stabilizer_x.T))
-        return 2.0 ** (-(self.num_qubits - num_constraints))
 
     def _cross_entropy_fidelity(
                                 self,
