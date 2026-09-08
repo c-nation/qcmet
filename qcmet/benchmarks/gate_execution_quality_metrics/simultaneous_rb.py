@@ -1,14 +1,11 @@
 """Simultaneous Randomised Benchmarking crosstalk (addressability) metric.
 
-This module provides the simultaneous Clifford randomised benchmarking
-implementation for the QCMet framework. The metric quantifies how much the
-error rate of a set of qubits degrades when neighbouring qubits are driven at
-the same time, and whether the additional error is *correlated* between
-subsets. It therefore measures crosstalk (equivalently, addressability), which
-is not captured by any of the single-subset gate metrics M3.1-M3.7 of
-arxiv:2502.06717.
+The metric quantifies how much the error rate of a set of qubits degrades
+when neighbouring qubits are driven at the same time, and whether the
+additional error is correlated between subsets.
+It therefore measures crosstalk.
 
-The protocol follows Gambetta et al., Phys. Rev. Lett. 109, 240504 (2012),
+The protocol follows Phys. Rev. Lett. 109, 240504 (2012),
 generalised from single qubits to arbitrary disjoint qubit subsets.
 
 Three families of numbers are produced:
@@ -357,7 +354,7 @@ class SimultaneousRB(BaseBenchmark):
         lower = (0.0, 0.0, min(floor, 0.0) - 0.1)
         upper = (1.0, 1.0 - floor + 1e-9, floor + 0.1)
         p0 = (0.99, max(float(y_values[0]) - floor, 1e-3), floor)
-        popt, pcov = curve_fit(
+        fitted_parameters, parameter_covariance = curve_fit(
             self.fit_func,
             m_values,
             y_values,
@@ -365,13 +362,13 @@ class SimultaneousRB(BaseBenchmark):
             bounds=(lower, upper),
             maxfev=20000,
         )
-        errors = np.sqrt(np.abs(np.diag(pcov)))
+        errors = np.sqrt(np.abs(np.diag(parameter_covariance)))
         return {
             "m": m_values,
             "mean": y_values,
-            "popt": popt,
-            "pcov": pcov,
-            "alpha": float(popt[0]),
+            "fitted_parameters": fitted_parameters,
+            "parameter_covariance": parameter_covariance,
+            "alpha": float(fitted_parameters[0]),
             "alpha_stderr": float(errors[0]),
         }
 
@@ -533,7 +530,10 @@ class SimultaneousRB(BaseBenchmark):
             "uncertainties": errors,
             "fit_result": {
                 context: {
-                    label: {"popt": fit["popt"], "pcov": fit["pcov"]}
+                    label: {
+                        "fitted_parameters": fit["fitted_parameters"],
+                        "parameter_covariance": fit["parameter_covariance"],
+                    }
                     for label, fit in fits.items()
                 }
                 for context, fits in self.fits.items()
@@ -575,7 +575,7 @@ class SimultaneousRB(BaseBenchmark):
                 )
                 axes.plot(
                     fit_xxs,
-                    self.fit_func(fit_xxs, *fit["popt"]),
+                    self.fit_func(fit_xxs, *fit["fitted_parameters"]),
                     linestyle=style,
                     c=colour,
                 )

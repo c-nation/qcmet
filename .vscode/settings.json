@@ -1,0 +1,4 @@
+{
+    "flake8.enabled": false,
+    "ruff.enable": true
+}
