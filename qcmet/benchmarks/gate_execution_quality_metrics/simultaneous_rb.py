@@ -1,8 +1,8 @@
 """Simultaneous Randomised Benchmarking crosstalk (addressability) metric.
 
 The metric quantifies how much the error rate of a set of qubits degrades
-when neighbouring qubits are driven at the same time, and whether the
-additional error is correlated between subsets.
+when neighbouring qubits are active (i.e. not idle) at the same time,
+and whether the additional error is correlated between subsets.
 It therefore measures crosstalk.
 
 The protocol follows Phys. Rev. Lett. 109, 240504 (2012),
@@ -13,8 +13,7 @@ Three families of numbers are produced:
 - the isolated error per Clifford of each subset, obtained from a standard
   Clifford RB decay measured while every other subset idles;
 - the simultaneous error per Clifford of each subset, obtained from the same
-  decay measured while every other subset is driven with its own independent
-  random Clifford sequence;
+  random Clifford sequence (i.e., active).
 - a correlation parameter for each pair of subsets, obtained from the decay of
   the joint Pauli-Z parity observable, which vanishes identically when the
   noise acting on the two subsets is a tensor product.
@@ -191,7 +190,7 @@ class SimultaneousRB(BaseBenchmark):
         Args:
             sequences (List[Dict[str, Any]]): One random sequence per subset, as
                 returned by ``_random_sequence``.
-            active (Sequence[int]): Indices of the subsets that are driven. Subsets
+            active (Sequence[int]): Indices of the subsets that are active. Subsets
                 that are not listed idle for the whole circuit.
             m (int): Sequence length.
 
@@ -232,7 +231,7 @@ class SimultaneousRB(BaseBenchmark):
                 'circuit' (QuantumCircuit): The benchmark circuit.
                 'm' (int): The sequence length.
                 'mode' (str): Either 'isolated' or 'simultaneous'.
-                'active' (str): Subset label being driven, or 'all'.
+                'active' (str): Subset label of active qubits, or 'all'.
                 'seq_id' (int): Index of the random seed, shared by the isolated
                     and simultaneous circuits built from the same sequences.
 
