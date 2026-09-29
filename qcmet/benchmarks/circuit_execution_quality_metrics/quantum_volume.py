@@ -341,14 +341,27 @@ class QuantumVolume(SequentialBenchmark):
             save_path (str | Path | FileManager, optional): Path to save benchmark outputs. Defaults to None.
 
         """
+        parameter_sequence = [
+            {
+                "qubits": (
+                    qubit_indices[:num_qubits]
+                    if qubit_indices is not None
+                    else num_qubits
+                )
+            }
+            for num_qubits in range(min_qubits, max_qubits + 1)
+        ]
+
         super().__init__(
-            "Quantum Volume",
-            QuantumVolumeFixedQubits,
-            min_qubits,
-            max_qubits,
-            qubit_indices,
-            {"trials": trials, "save_path": save_path, "seed": seed},
-            save_path
+            name="Quantum Volume",
+            benchmark_class=QuantumVolumeFixedQubits,
+            parameter_sequence=parameter_sequence,
+            fixed_parameters={
+                "trials": trials,
+                "save_path": save_path,
+                "seed": seed,
+            },
+            save_path=save_path,
         )
 
     def should_stop(self, results):
@@ -364,7 +377,15 @@ class QuantumVolume(SequentialBenchmark):
             Dict[str, object]: {"V_Q": int | None}
 
         """
-        qubit = self.get_largest_successful_qubit()
+        if not self.run_records or not self.run_records[-1][
+            "stopping_condition_met"
+        ]:
+            qubit = None
+        elif len(self.run_records) == 1:
+            qubit = None
+        else:
+            qubits = self.run_records[-2]["resolved_parameters"]["qubits"]
+            qubit = len(qubits) if isinstance(qubits, list) else qubits
         vq = None if qubit is None else 2 ** qubit
 
         return {"V_Q": vq}

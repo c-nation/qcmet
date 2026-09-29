@@ -180,21 +180,23 @@ def test_qscore_sequential_analyze():
     """Verify that QScore._analyze correctly outputs the QScore value or None in the resulting dict."""
     qscore = QScore(2, 100)
 
-    with patch("qcmet.benchmarks.SequentialBenchmark.get_largest_successful_qubit") as mock_qubit:
-        mock_qubit.return_value = None
-        assert qscore._analyze()["QScore"] is None
+    assert qscore._analyze()["QScore"] is None
 
-    with patch("qcmet.benchmarks.SequentialBenchmark.get_largest_successful_qubit") as mock_qubit:
-        mock_qubit.return_value = 4
-        assert qscore._analyze()["QScore"] == 4
+    qscore.run_records = [
+        {"resolved_parameters": {"qubits": 4}, "stopping_condition_met": False},
+        {"resolved_parameters": {"qubits": 5}, "stopping_condition_met": True},
+    ]
+    assert qscore._analyze()["QScore"] == 4
 
 
 def test_qscore_sequential_plot():
     """Verify that QScore._plot correctly plots the QScore values of each QScoreSingleInstance."""
     device = IdealSimulator()
     qscore = QScore(2, 3)
-    qscore.all_results = [{"beta": 0.4, "passed": True},
-                          {"beta": 0.3, "passed": True}]
+    qscore.run_records = [
+        {"resolved_parameters": {"qubits": 2}, "result": {"beta": 0.4}},
+        {"resolved_parameters": {"qubits": 3}, "result": {"beta": 0.3}},
+    ]
     qscore._runtime_params = {"device": device}
     _, ax = plt.subplots()
     qscore.plot(ax)

@@ -285,24 +285,39 @@ class BaseBenchmark(ABC):
                 ) as file:
                     qasm3.dump(circ, file)
 
-    def run(self, device: BaseDevice = None, num_shots: int = 1024, **kwargs):
+    def run(self,
+            device: BaseDevice = None,
+            num_shots: int = 1024,
+            max_circuits_per_job: int | None = None,
+            **kwargs):
         """Run benchmark.
+        If circuits are already prepared, exactly those stored circuits are
+          executed. If no circuit set exists, circuits are generated lazily.
 
-        If no device is provided, run_offline is executed which provides all necessary data to run benchmark offline in a saved
-        directory.
+        If no device is provided, run_offline is executed which provides all
+          necessary data to run benchmark offline in a saved
+          directory.
 
         Args:
             device (BaseDevice, optional): Device to run benchmark on. Defaults to None.
             num_shots (int, optional): Number of measurements per circuit. Defaults to 1024.
+            max_circuits_per_job (int, optional): Maximum number of circuits to be submitted per job. 
+            This is for when benchmark requires more circuits than hardware can run in one job. Defaults to None.
+
             **kwargs (Dict[str, any]): Optional keyword arguments passed to device in _runtime_params.
 
         Raises:
             MeasurementOutcomesExistError: When benchmark already has measurements
 
         """
+        if self._experiment_data is None:
+            self.generate_circuits()
+
         self._runtime_params: Dict[str, Any] = {
             "num_shots": num_shots,
             "device": device,
+            "max_circuits_per_job": max_circuits_per_job,
+
         } | kwargs
 
         if "circuit_measurements" in self._experiment_data:
@@ -313,22 +328,40 @@ class BaseBenchmark(ABC):
             else:
                 return self._run_offline()
 
-    def generate_circuits(self) -> None:
-        """Generate benchmark circuits, user facing.
+    def generate_circuits(self, regenerate: bool = False) -> None:
+        """Prepare and store benchmark circuits without executing them.
 
-        The benchmark circuits are routed based on user-defined qubit indices (if specified).
+        Generation is idempotent by default. An existing circuit set is kept
+        so random circuits inspected by a user are the circuits later executed
+        by ``run``. Pass ``regenerate=True`` to explicitly replace an
+        unexecuted circuit set.
 
+        Args:
+            regenerate: Replace an existing unmeasured circuit set.
+
+        Raises:
+            MeasurementOutcomesExistError: If regeneration is requested after
+                measurements have been loaded.
         """
+        if self._experiment_data is not None:
+            has_measurements = (
+                "circuit_measurements" in self._experiment_data.columns
+            )
+            if regenerate and has_measurements:
+                raise MeasurementOutcomesExistError()
+            if not regenerate:
+                return
+
         self.experiment_data = self._generate_circuits()
-        if isinstance(self.qubits, list):
+
+        if isinstance(self.qubits, list) and self.qubits:
             routed_circuits = []
             qc_index = QuantumCircuit(max(self.qubits) + 1)
             for qc in self.experiment_data["circuit"]:
                 qc_routed = qc_index.compose(qc, qubits=self.qubits)
                 routed_circuits.append(qc_routed)
             self.experiment_data["circuit"] = routed_circuits
-        else:
-            pass
+
         if self.save_enabled:
             self.save()
 
@@ -362,6 +395,7 @@ class BaseBenchmark(ABC):
         counts = self._runtime_params["device"].run(
             self.circuits,
             num_shots=self._runtime_params["num_shots"],
+            max_circuits_per_job=self._runtime_params["max_circuits_per_job"]
         )
         self.load_circuit_measurements(counts)
 
@@ -516,6 +550,7 @@ class BaseBenchmark(ABC):
         self,
         device: BaseDevice,
         num_shots: int = 1024,
+        max_circuits_per_job=None,
         axes: Optional[matplotlib.axes._axes.Axes] = None,
         **kwargs,
     ):
@@ -526,12 +561,18 @@ class BaseBenchmark(ABC):
         Args:
             device (BaseDevice): Device to run benchmark on.
             num_shots (int, optional): Number of measurements per circuit. Defaults to 1024.
+            max_circuits_per_job (int, optional): Maximum number of circuits to be submitted per job. This is for when
+            benchmark requires more circuits than hardware can run in one job. Defaults to None.
             axes (matplotlib.axes._axes.Axes, optional): Plot will use axes if provided. Defaults to None.
             **kwargs (Dict[str, any]): Optional keyword arguments passed to device in _runtime_params.
 
         """
-        self.generate_circuits()
-        self.run(device=device, num_shots=num_shots, **kwargs)
+        self.run(
+            device=device,
+            num_shots=num_shots,
+            max_circuits_per_job=max_circuits_per_job,
+            **kwargs,
+        )
         self.analyze()
         self.plot(axes=axes)
         return self.result

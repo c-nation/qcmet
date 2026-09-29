@@ -1,123 +1,329 @@
 """sequential_benchmark.py.
 
-This module provides a utility class for executing a benchmark multiple times with
-different numbers of qubits, and optionally with a user-defined fail condition
-such that future runs will be aborted if the fail condition is met by a run.
-"""
-from abc import ABC
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+This module provides a utility class for executing a benchmark multiple times
+with different parameter values.
 
+Sequential execution runs a benchmark for a user-defined ordered sequence of
+parameter dictionaries.
+
+Subclasses must implement ``_analyze`` to compute the aggregate result from
+the sequence, and may override ``should_stop`` to terminate the sequence
+based on the result of an individual benchmark run.
+"""
+
+from __future__ import annotations
+from typing import Any
+
+from pathlib import Path
+
+from pandas import DataFrame
 from qiskit import QuantumCircuit
 
 from qcmet.benchmarks.base_benchmark import BaseBenchmark
 from qcmet.core import FileManager
-from qcmet.devices.base_device import BaseDevice
+from qcmet.core.exceptions import MeasurementOutcomesExistError
 
 
-class SequentialBenchmark(BaseBenchmark, ABC):
-    """Abstract utility class for running a BaseBenchmark with different numbers of qubits.
+class SequentialBenchmark(BaseBenchmark):
+    """Run a child benchmark over an ordered sequence of parameters.
 
-    This class runs a given BaseBenchmark multiple times in a sequence by looping through
-    the number of qubits for initializing the BaseBenchmark. The sequential runs stop if
-    an optional fail condition checked using self.should_stop is met.
+    ``parameter_sequence`` varies arbitrary constructor parameters between
+    runs. For example::
 
+        parameter_sequence = [
+            {"qubits": 4, "size": 16},
+            {"qubits": 4, "size": 24},
+            {"qubits": 6, "size": 48},
+        ]
+
+    Parameters in ``parameter_sequence`` override parameters in
+    ``fixed_parameters`` for the corresponding run.
+
+    Subclasses must implement:
+
+    - ``_analyze`` to calculate an aggregate result from the completed runs.
+
+    Subclasses may override:
+
+    - ``should_stop`` to define a benchmark-specific stopping condition.
+
+    Attributes:
+        benchmarks:
+            Child benchmark instances, in execution order.
+        run_records:
+            Parameters, results, and stopping information for every completed
+            run.
+        run_index:
+            Zero-based index of the next run in the configured sequence.
     """
 
     def __init__(
-            self,
-            name: str,
-            benchmark_class: type[BaseBenchmark],
-            min_qubits: int = 1,
-            max_qubits: int = 10,
-            qubit_indices: Optional[List[int]] = None,
-            fixed_parameters: Dict[str, Any] = None,
-            save_path: Optional[str | Path | FileManager] = None,
+        self,
+        name: str,
+        benchmark_class: type[BaseBenchmark],
+        parameter_sequence: list[dict[str, Any]],
+        fixed_parameters: dict[str, Any] | None = None,
+        save_path: str | Path | FileManager | None = None,
     ):
-        """Initialize a SequentialBenchmark instance.
+        """Initialise a sequential benchmark.
 
         Args:
-            name (str): The name of the benchmark.
-            benchmark_class (type[BaseBenchmark]): A class inheriting from BaseBenchmark.
-                This represents the benchmark to be run.
-            min_qubits (int, optional): The minimum number of qubits to start from. Defaults to 1.
-            max_qubits (int, optional): The maximum number of qubits to stop at, inclusively. Defaults to 10.
-            qubit_indices (List[int], optional): The indices of the qubits to benchmark on.
-                Each benchmark on n qubits will use qubits indexed by the first n-th elements of this list.
-                Defaults to None.
-            fixed_parameters (dict): A dictionary of fixed parameters to initialize benchmarks with.
-            save_path (str | Path | FileManager, optional): Path to save benchmark outputs. Defaults to None.
+            name:
+                Name of the sequential benchmark.
+            benchmark_class:
+                ``BaseBenchmark`` subclass to instantiate for each run.
+            fixed_parameters:
+                Constructor parameters shared by every child benchmark.
+            parameter_sequence:
+                Ordered list of parameter dictionaries for child benchmarks.
+            save_path:
+                Optional path or ``FileManager`` for sequential benchmark
+                outputs.
 
+        Raises:
+            TypeError:
+                If ``benchmark_class`` is not a ``BaseBenchmark`` subclass.
+            ValueError:
+                If the parameter sequence is invalid.
         """
-        super().__init__(name, qubits=[], save_path=save_path)
-        self.qubits = None
-        self.config["benchmark_class"] = name
-        self.config.update(fixed_parameters)
-        self.config["min_qubits"] = min_qubits
-        self.config["max_qubits"] = max_qubits
-        self.config["qubit_indices"] = qubit_indices
+        super().__init__(
+            name=name,
+            qubits=[],
+            save_path=save_path,
+        )
+        self.qubits = []
+
+        self._validate_benchmark_class(benchmark_class)
+
+        fixed_parameters = (
+            {} if fixed_parameters is None else dict(fixed_parameters)
+        )
+
+        sequence = self._validate_parameter_sequence(parameter_sequence)
 
         self.benchmark_class = benchmark_class
         self.fixed_parameters = fixed_parameters
+        self.parameter_sequence = sequence
+
+        self.config["benchmark_class"] = benchmark_class.__name__
+        self.config["fixed_parameters"] = fixed_parameters
+        self.config["parameter_sequence"] = sequence
+
         self.run_index = 0
-        self.benchmarks = []
-        self.all_results = []
+        self.benchmarks: list[BaseBenchmark] = []
+        self.run_records: list[dict[str, Any]] = []
+        self._prepared_stages: dict[int, BaseBenchmark] = {}
 
-    def _get_current_qubits(self):
-        """Get the qubit number or qubit indices for the current run in the sequence."""
-        if self.config["qubit_indices"] is None:
-            return self.config["min_qubits"] + self.run_index
-        else:
-            return self.config["qubit_indices"][:(self.config["min_qubits"] + self.run_index)]
+    @staticmethod
+    def _validate_benchmark_class(
+        benchmark_class: type[BaseBenchmark],
+    ) -> None:
+        """Validate the child benchmark class."""
+        if (
+            not isinstance(benchmark_class, type)
+            or not issubclass(benchmark_class, BaseBenchmark)
+        ):
+            raise TypeError(
+                "benchmark_class must be a subclass of BaseBenchmark"
+            )
 
-    def _generate_circuits(self) -> List[QuantumCircuit] | Dict[str, any]:
-        """Generate the circuits corresponding to the current run."""
-        qubits = self._get_current_qubits()
-        benchmark = self.benchmark_class(**self.fixed_parameters, qubits=qubits)
-        circuits = benchmark._generate_circuits()
+    @staticmethod
+    def _validate_parameter_sequence(
+        parameter_sequence: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Validate and copy a user-defined parameter sequence."""
+        if not isinstance(parameter_sequence, list):
+            raise TypeError(
+                "parameter_sequence must be a list of dictionaries"
+            )
+
+        if not parameter_sequence:
+            raise ValueError("parameter_sequence must not be empty")
+
+        if not all(
+            isinstance(parameters, dict)
+            for parameters in parameter_sequence
+        ):
+            raise TypeError(
+                "Every entry in parameter_sequence must be a dictionary"
+            )
+
+        return [dict(parameters) for parameters in parameter_sequence]
+
+    def _get_parameters(
+        self,
+        run_index: int,
+    ) -> dict[str, Any]:
+        """Return the resolved child-benchmark parameters for one run."""
+        if run_index < 0 or run_index >= len(self.parameter_sequence):
+            raise IndexError(
+                f"Run index {run_index} is outside the configured sequence"
+            )
+
+        varying_parameters = dict(self.parameter_sequence[run_index])
+
+        # Sequence values intentionally take precedence over fixed_parameters.
+        parameters = self.fixed_parameters | varying_parameters
+
+        return parameters
+
+    def _create_benchmark(
+        self,
+        run_index: int,
+    ) -> tuple[BaseBenchmark, dict[str, Any]]:
+        """Create the child benchmark for one sequence entry."""
+        parameters = self._get_parameters(run_index)
+        benchmark = self.benchmark_class(**parameters)
+        return benchmark, parameters
+
+    def prepare_stage(
+        self,
+        run_index: int,
+        regenerate: bool = False,
+    ) -> BaseBenchmark:
+        """Prepare one child stage and cache it for later execution."""
+        if run_index in self._prepared_stages:
+            benchmark = self._prepared_stages[run_index]
+            benchmark.generate_circuits(regenerate=regenerate)
+            return benchmark
+
+        benchmark, _ = self._create_benchmark(run_index)
+        benchmark.generate_circuits()
+        self._prepared_stages[run_index] = benchmark
+        return benchmark
+
+    def prepare_all_stages(
+        self,
+        regenerate: bool = False,
+    ) -> list[BaseBenchmark]:
+        """Prepare all configured stages without executing them."""
+        return [
+            self.prepare_stage(index, regenerate=regenerate)
+            for index in range(len(self.parameter_sequence))
+        ]
+
+    def generate_circuits(self, regenerate: bool = False) -> None:
+        """Prepare all child stages without flattening their experiments."""
+        self.prepare_all_stages(regenerate=regenerate)
+
+    def _generate_circuits(
+        self,
+    ) -> list[QuantumCircuit] | dict[str, Any]:
+        """Generate raw circuits for the current child stage.
+
+        Public callers should use ``prepare_stage`` or ``generate_circuits``
+        so the generated circuits remain attached to the child benchmark that
+        will execute them.
+        """
+        benchmark, _ = self._create_benchmark(self.run_index)
+        return benchmark._generate_circuits()
+
+    @property
+    def circuits(self) -> list[QuantumCircuit]:
+        """Return circuits from prepared stages in stage order."""
+        if not self._prepared_stages:
+            raise AttributeError(f"Circuits not generated for {self.name}!")
+        circuits = []
+        for index in sorted(self._prepared_stages):
+            circuits.extend(self._prepared_stages[index].circuits)
         return circuits
 
-    def should_stop(self, _results):
-        """Determine if the benchmark should be stopped based on given results.
+    def should_stop(
+        self,
+        results: dict[str, Any],
+    ) -> bool:
+        """Return whether sequential execution should stop.
 
-        Default implementation never stops, and subclasses may override this
-        method to customize the stopping condition.
+        The default implementation never stops. Subclasses can override this
+        method to implement benchmark-specific stopping conditions.
+
+        Args:
+            results:
+                Result dictionary returned by the completed child benchmark.
+
+        Returns:
+            ``True`` if no further runs should be executed.
         """
         return False
 
-    def run(self, device: BaseDevice = None, num_shots: int = 1024, **kwargs):
-        """Run the sequential benchmark for increasing qubits. Overrides BaseBenchmark.run.
+    def run(
+        self,
+        device=None,
+        num_shots: int = 1024,
+        **kwargs: Any,
+    ) -> list[dict[str, Any]]:
+        """Execute and analyse child stages lazily in configured order."""
+        if self.run_records:
+            raise MeasurementOutcomesExistError()
 
-        Args:
-            device (BaseDevice, optional): Device to run benchmark on. Defaults to None.
-            num_shots (int, optional): Number of measurements per circuit. Defaults to 1024.
-            **kwargs (Dict[str, any]): Optional keyword arguments passed to device in _runtime_params.
+        self._runtime_params = {
+            "num_shots": num_shots,
+            "device": device,
+        } | kwargs
+        self.run_index = 0
+        self.benchmarks = []
 
-        """
-        for _ in range(self.config["min_qubits"], self.config["max_qubits"] + 1):
-            qubits = self._get_current_qubits()
-            benchmark = self.benchmark_class(**self.fixed_parameters, qubits=qubits)
+        for run_index in range(len(self.parameter_sequence)):
+            self.run_index = run_index
+            parameters = self._get_parameters(run_index)
+
+            benchmark = self._prepared_stages.get(run_index)
+            if benchmark is None:
+                benchmark, _ = self._create_benchmark(run_index)
+                self._prepared_stages[run_index] = benchmark
+
+            # Child run lazily generates circuits if this stage was not prepared.
+            benchmark.run(
+                device=device,
+                num_shots=num_shots,
+                **kwargs,
+            )
+            results = benchmark.analyze()
+
+            if not isinstance(results, dict):
+                raise TypeError(
+                    f"{self.benchmark_class.__name__} returned "
+                    f"{type(results).__name__}; sequential benchmark results "
+                    "must be dictionaries"
+                )
+
+            stop = bool(self.should_stop(results))
             self.benchmarks.append(benchmark)
+            self.run_records.append(
+                {
+                    "run_index": run_index,
+                    "sequence_parameters": dict(
+                        self.parameter_sequence[run_index]
+                    ),
+                    "resolved_parameters": parameters,
+                    "result": results,
+                    "stopping_condition_met": stop,
+                }
+            )
 
-            results = benchmark(device, num_shots, **kwargs)
-            self.all_results.append(results)
-
-            if self.should_stop(results):
-                print(f"The stopping condition is met on run {self.run_index} with qubits={qubits}.")
+            if stop:
+                print(
+                    "The stopping condition was met on run "
+                    f"{run_index} with parameters {parameters}."
+                )
                 break
-            self.run_index += 1
 
-    def get_largest_successful_qubit(self):
-        """Get the largest qubit number with a successful run, printing suggestions if all/none runs pass."""
-        largest_successful_qubit = None
-        if self.run_index == 0:
-            print("The first run mets the fail condition. "
-                  "Please reduce the minimum number of qubits.")
-        elif self.run_index == self.config["max_qubits"] + 1 - self.config["min_qubits"]:
-            print("All runs finished successfully. "
-                  "If there was a set fail condition, please increase the maximum number of qubits.")
-        else:
-            largest_successful_qubit = self.config["min_qubits"] + self.run_index - 1
-            print(f"The largest qubit number with a successful run is {largest_successful_qubit}.")
+        self.run_index = len(self.run_records)
+        self._experiment_data = DataFrame(self.run_records)
+        return [record["result"] for record in self.run_records]
 
-        return largest_successful_qubit
+    def reset(self, clear_prepared: bool = True) -> None:
+        """Reset sequential state before a new execution."""
+        if not clear_prepared and any(
+            child._experiment_data is not None
+            and "circuit_measurements" in child._experiment_data.columns
+            for child in self._prepared_stages.values()
+        ):
+            raise MeasurementOutcomesExistError()
+
+        self.run_index = 0
+        self.benchmarks = []
+        self.run_records = []
+        self._experiment_data = None
+        if clear_prepared:
+            self._prepared_stages = {}

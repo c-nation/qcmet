@@ -206,13 +206,13 @@ def test_qv_analyze():
     """Verify that QuantumVolume._analyze correctly outputs the V_Q value or None in the resulting dict."""
     qv = QuantumVolume(1, 100)
 
-    with patch("qcmet.benchmarks.SequentialBenchmark.get_largest_successful_qubit") as mock_qubit:
-        mock_qubit.return_value = None
-        assert qv._analyze()["V_Q"] is None
+    assert qv._analyze()["V_Q"] is None
 
-    with patch("qcmet.benchmarks.SequentialBenchmark.get_largest_successful_qubit") as mock_qubit:
-        mock_qubit.return_value = 4
-        assert qv._analyze()["V_Q"] == 2 ** 4
+    qv.run_records = [
+        {"resolved_parameters": {"qubits": 4}, "stopping_condition_met": False},
+        {"resolved_parameters": {"qubits": 5}, "stopping_condition_met": True},
+    ]
+    assert qv._analyze()["V_Q"] == 2 ** 4
 
 
 def test_qv_plot():
