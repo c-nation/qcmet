@@ -41,10 +41,10 @@ class SimultaneousRB(BaseBenchmark):
     """Implements the simultaneous randomised benchmarking crosstalk metric.
 
     The register is partitioned into disjoint subsets. For every sequence
-    length ``m`` and every random seed the class emits
+    length and every random seed the class emits
 
     - one *simultaneous* circuit in which each subset executes its own
-      independent length-``m`` random Clifford sequence in parallel, and
+    independent random Clifford sequence in parallel, and
     - one *isolated* circuit per subset, in which only that subset executes its
       sequence and every other subset idles.
 
@@ -66,23 +66,24 @@ class SimultaneousRB(BaseBenchmark):
 
     def __init__(
         self,
-        m_list: List[int],
+        sequence_lengths: List[int],
         subsets: Sequence[Sequence[int]],
-        circs_per_m: int = 10,
+        circuits_per_sequence_length: int = 10,
         seed: int | None = None,
         save_path: str | Path | FileManager | None = None,
     ):
         """Initialize the simultaneous randomised benchmark.
 
         Args:
-            m_list (List[int]): The list of sequence lengths to run the benchmark on.
+            sequence_lengths (List[int]): The numbers of random Clifford gates in
+                each benchmark sequence.
             subsets (Sequence[Sequence[int]]): Disjoint groups of physical qubit
                 indices that are benchmarked against each other, for example
                 ``[[0], [1]]`` for two single qubits or ``[[0, 1], [2, 3]]`` for
                 two qubit pairs. At least two subsets must be supplied.
-            circs_per_m (int): The number of random seeds generated for a given
-                sequence length m. Each seed produces one simultaneous circuit and
-                one isolated circuit per subset.
+            circuits_per_sequence_length (int): The number of random seeds
+                generated for each sequence length. Each seed produces one
+                simultaneous circuit and one isolated circuit per subset.
             seed (int, optional): Seed for the random Clifford sampling, used to make
                 circuit generation reproducible. Defaults to None.
             save_path (str | Path | FileManager | None, optional): Directory path to
@@ -114,8 +115,10 @@ class SimultaneousRB(BaseBenchmark):
 
         super().__init__("SimultaneousRB", qubits=flat, save_path=save_path)
 
-        self.config["m_list"] = sorted(int(m) for m in m_list)
-        self.config["circs_per_m"] = circs_per_m
+        self.config["sequence_lengths"] = sorted(
+            int(sequence_length) for sequence_length in sequence_lengths
+        )
+        self.config["circuits_per_sequence_length"] = circuits_per_sequence_length
         self.config["subsets"] = subsets
         self.config["seed"] = seed
 
@@ -157,7 +160,9 @@ class SimultaneousRB(BaseBenchmark):
         """
         return list(combinations(range(len(self.subsets)), 2))
 
-    def _random_sequence(self, num_qubits: int, m: int) -> Dict[str, Any]:
+    def _random_sequence(
+        self, num_qubits: int, sequence_length: int
+    ) -> Dict[str, Any]:
         """Draw a random Clifford sequence together with its inverting Clifford.
 
         Elements are sampled uniformly from the ``num_qubits``-qubit Clifford
@@ -166,24 +171,28 @@ class SimultaneousRB(BaseBenchmark):
 
         Args:
             num_qubits (int): Width of the subset the sequence acts on.
-            m (int): Number of random Clifford elements in the sequence.
+            sequence_length (int): Number of random Clifford elements in the
+                sequence.
 
         Returns:
-            Dict[str, Any]: Dictionary with key 'layers', the list of m Clifford
-            element circuits, and key 'inverse', the circuit implementing the
-            inverse of their product.
+            Dict[str, Any]: Dictionary with key 'layers', the list of Clifford
+                element circuits, and key 'inverse', the circuit implementing
+                the inverse of their product.
 
         """
         total = Clifford(QuantumCircuit(num_qubits))
         layers = []
-        for _ in range(m):
+        for _ in range(sequence_length):
             element = random_clifford(num_qubits, seed=self._rng)
             layers.append(element.to_circuit())
             total = total.compose(element)
         return {"layers": layers, "inverse": total.adjoint().to_circuit()}
 
     def _build_circuit(
-        self, sequences: List[Dict[str, Any]], active: Sequence[int], m: int
+        self,
+        sequences: List[Dict[str, Any]],
+        active: Sequence[int],
+        sequence_length: int,
     ) -> QuantumCircuit:
         """Assemble one benchmarking circuit on the compact register.
 
@@ -192,7 +201,8 @@ class SimultaneousRB(BaseBenchmark):
                 returned by ``_random_sequence``.
             active (Sequence[int]): Indices of the subsets that are active. Subsets
                 that are not listed idle for the whole circuit.
-            m (int): Sequence length.
+            sequence_length (int): Number of random Clifford elements in the
+                sequence.
 
         Returns:
             QuantumCircuit: Circuit of ``self.num_qubits`` qubits, layer separated
@@ -201,7 +211,7 @@ class SimultaneousRB(BaseBenchmark):
         """
         q_reg = QuantumRegister(self.num_qubits, name="q")
         circ = QuantumCircuit(q_reg)
-        for layer in range(m):
+        for layer in range(sequence_length):
             for k in active:
                 circ.compose(
                     sequences[k]["layers"][layer],
@@ -219,9 +229,9 @@ class SimultaneousRB(BaseBenchmark):
     def _generate_circuits(self):
         """Generate the isolated and simultaneous randomised benchmarking circuits.
 
-        For each sequence length m and each of ``circs_per_m`` seeds:
-            1. Draw an independent random Clifford sequence of length m for every
-               subset, together with its inverting Clifford.
+        For each sequence length and each random seed:
+            1. Draw an independent random Clifford sequence for every subset,
+               together with its inverting Clifford.
             2. Build one circuit in which all subsets run their sequence in parallel.
             3. Build one circuit per subset in which only that subset runs its
                sequence, reusing the sequence drawn in step 1.
@@ -229,7 +239,8 @@ class SimultaneousRB(BaseBenchmark):
         Returns:
             List[Dict]: Each dict contains:
                 'circuit' (QuantumCircuit): The benchmark circuit.
-                'm' (int): The sequence length.
+                'sequence_length' (int): The number of random Clifford elements
+                    in the sequence.
                 'mode' (str): Either 'isolated' or 'simultaneous'.
                 'active' (str): Subset label of active qubits, or 'all'.
                 'seq_id' (int): Index of the random seed, shared by the isolated
@@ -238,16 +249,19 @@ class SimultaneousRB(BaseBenchmark):
         """
         data = []
         all_subsets = range(len(self.subsets))
-        for m in self.config["m_list"]:
-            for seq_id in range(self.config["circs_per_m"]):
+        for sequence_length in self.config["sequence_lengths"]:
+            for seq_id in range(self.config["circuits_per_sequence_length"]):
                 sequences = [
-                    self._random_sequence(len(subset), m) for subset in self.subsets
+                    self._random_sequence(len(subset), sequence_length)
+                    for subset in self.subsets
                 ]
 
                 data.append(
                     self._circ_with_metadata_dict(
-                        self._build_circuit(sequences, all_subsets, m),
-                        m=m,
+                        self._build_circuit(
+                            sequences, all_subsets, sequence_length
+                        ),
+                        sequence_length=sequence_length,
                         mode="simultaneous",
                         active="all",
                         seq_id=seq_id,
@@ -256,8 +270,8 @@ class SimultaneousRB(BaseBenchmark):
                 for k in all_subsets:
                     data.append(
                         self._circ_with_metadata_dict(
-                            self._build_circuit(sequences, [k], m),
-                            m=m,
+                            self._build_circuit(sequences, [k], sequence_length),
+                            sequence_length=sequence_length,
                             mode="isolated",
                             active=self.labels[k],
                             seq_id=seq_id,
@@ -270,11 +284,12 @@ class SimultaneousRB(BaseBenchmark):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def fit_func(m, alpha, a0, b0):
+    def fit_func(sequence_length, alpha, a0, b0):
         """Exponential decay fit function.
 
         Args:
-            m (series): sequence length.
+            sequence_length (series): Number of random Clifford elements in a
+                sequence.
             alpha (float): decay fitting parameter.
             a0 (float): amplitude fitting parameter.
             b0 (float): baseline fitting parameter.
@@ -283,7 +298,7 @@ class SimultaneousRB(BaseBenchmark):
             ndarray: fitting function datapoints.
 
         """
-        return a0 * alpha**m + b0
+        return a0 * alpha**sequence_length + b0
 
     @staticmethod
     def _survival(probabilities: Dict[str, float], positions: Sequence[int]) -> float:
@@ -346,8 +361,8 @@ class SimultaneousRB(BaseBenchmark):
             parameter and its standard error.
 
         """
-        averaged = frame.groupby("m")[column].mean().sort_index()
-        m_values = np.asarray(averaged.index, dtype=float)
+        averaged = frame.groupby("sequence_length")[column].mean().sort_index()
+        sequence_length_values = np.asarray(averaged.index, dtype=float)
         y_values = np.asarray(averaged.to_list(), dtype=float)
 
         lower = (0.0, 0.0, min(floor, 0.0) - 0.1)
@@ -355,7 +370,7 @@ class SimultaneousRB(BaseBenchmark):
         p0 = (0.99, max(float(y_values[0]) - floor, 1e-3), floor)
         fitted_parameters, parameter_covariance = curve_fit(
             self.fit_func,
-            m_values,
+            sequence_length_values,
             y_values,
             p0=np.clip(p0, lower, upper),
             bounds=(lower, upper),
@@ -363,7 +378,7 @@ class SimultaneousRB(BaseBenchmark):
         )
         errors = np.sqrt(np.abs(np.diag(parameter_covariance)))
         return {
-            "m": m_values,
+            "sequence_lengths": sequence_length_values,
             "mean": y_values,
             "fitted_parameters": fitted_parameters,
             "parameter_covariance": parameter_covariance,
@@ -553,8 +568,8 @@ class SimultaneousRB(BaseBenchmark):
             matplotlib.legend.Legend: Legend for the plot.
 
         """
-        m_max = max(self.config["m_list"])
-        fit_xxs = np.linspace(0, m_max, 500)
+        max_sequence_length = max(self.config["sequence_lengths"])
+        fit_xxs = np.linspace(0, max_sequence_length, 500)
         colours = [f"C{i}" for i in range(len(self.labels))]
 
         for label, colour in zip(self.labels, colours, strict=True):
@@ -564,7 +579,7 @@ class SimultaneousRB(BaseBenchmark):
             ):
                 fit = self.fits[context][label]
                 axes.plot(
-                    fit["m"],
+                    fit["sequence_lengths"],
                     fit["mean"],
                     linestyle="",
                     marker=marker,
@@ -580,9 +595,9 @@ class SimultaneousRB(BaseBenchmark):
                 )
 
         smallest = min(len(subset) for subset in self.subsets)
-        axes.set_xlim((0, m_max))
+        axes.set_xlim((0, max_sequence_length))
         axes.set_ylim((1 / 2**smallest - 0.05, 1.02))
-        axes.set_xlabel(r"$m$")
-        axes.set_ylabel(r"$p_0$")
+        axes.set_xlabel(r"$\text{Sequence Length}, m$")
+        axes.set_ylabel("Survival Probability, $p_0$")
 
         return axes.legend()

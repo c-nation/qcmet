@@ -25,26 +25,26 @@ from qcmet.benchmarks.gate_execution_quality_metrics.simultaneous_rb import (
 def test_rejects_invalid_subsets(subsets, message):
     """Reject subset definitions that cannot represent disjoint registers."""
     with pytest.raises(ValueError, match=message):
-        SimultaneousRB(m_list=[1], subsets=subsets)
+        SimultaneousRB(sequence_lengths=[1], subsets=subsets)
 
 
 def test_generation_has_one_simultaneous_and_one_isolated_circuit_per_subset():
     """Generate the documented circuit families and identifying metadata."""
     benchmark = SimultaneousRB(
-        m_list=[3, 1],
+        sequence_lengths=[3, 1],
         subsets=[[0], [2, 3], [5]],
-        circs_per_m=2,
+        circuits_per_sequence_length=2,
         seed=7,
     )
     benchmark.generate_circuits()
 
     data = benchmark.experiment_data
     assert len(data) == 2 * 2 * (1 + 3)
-    assert benchmark.config["m_list"] == [1, 3]
+    assert benchmark.config["sequence_lengths"] == [1, 3]
     assert benchmark.labels == ["q0", "q2_3", "q5"]
     assert benchmark.pairs == [(0, 1), (0, 2), (1, 2)]
 
-    for (_, _), group in data.groupby(["m", "seq_id"]):
+    for (_, _), group in data.groupby(["sequence_length", "seq_id"]):
         assert len(group) == 4
         assert list(group["mode"]).count("simultaneous") == 1
         assert set(group.loc[group["mode"] == "isolated", "active"]) == {
@@ -57,9 +57,9 @@ def test_generation_has_one_simultaneous_and_one_isolated_circuit_per_subset():
 def test_generation_is_reproducible_for_a_fixed_seed():
     """Use the benchmark seed to reproduce every random Clifford circuit."""
     kwargs = {
-        "m_list": [1, 3],
+        "sequence_lengths": [1, 3],
         "subsets": [[0], [1]],
-        "circs_per_m": 2,
+        "circuits_per_sequence_length": 2,
         "seed": 123,
     }
     first = SimultaneousRB(**kwargs)
@@ -80,9 +80,9 @@ def test_generation_is_reproducible_for_a_fixed_seed():
 def test_every_generated_sequence_is_inverted_to_identity():
     """Return all active subsets to the initial state in the absence of noise."""
     benchmark = SimultaneousRB(
-        m_list=[1, 4],
+        sequence_lengths=[1, 4],
         subsets=[[0], [1]],
-        circs_per_m=2,
+        circuits_per_sequence_length=2,
         seed=17,
     )
     benchmark.generate_circuits()
@@ -96,9 +96,9 @@ def test_every_generated_sequence_is_inverted_to_identity():
 def test_noncontiguous_physical_qubits_are_routed_correctly():
     """Route the compact benchmark register only onto requested physical qubits."""
     benchmark = SimultaneousRB(
-        m_list=[2],
+        sequence_lengths=[2],
         subsets=[[2], [5]],
-        circs_per_m=1,
+        circuits_per_sequence_length=1,
         seed=19,
     )
     benchmark.generate_circuits()
@@ -132,7 +132,7 @@ def test_survival_and_parity_estimators_marginalize_bitstrings():
 )
 def test_epc_conversion_uses_subset_dimension(alpha, width, expected_epc):
     """Convert RB decay into EPC using d = 2**subset_width."""
-    benchmark = SimultaneousRB(m_list=[1], subsets=[[0], [1]])
+    benchmark = SimultaneousRB(sequence_lengths=[1], subsets=[[0], [1]])
     assert benchmark._epc(alpha, width) == pytest.approx(expected_epc)
 
 
@@ -157,17 +157,17 @@ def _counts_for_known_decays(
     """Construct physical two-qubit distributions with prescribed Z decays."""
     all_counts = []
     for row in benchmark.experiment_data.itertuples():
-        m = row.m
+        sequence_length = row.sequence_length
         if row.mode == "isolated":
             subset_index = benchmark.labels.index(row.active)
-            z_value = isolated_alpha[subset_index] ** m
+            z_value = isolated_alpha[subset_index] ** sequence_length
             zero_probability = (1 + z_value) / 2
             excited = "10" if subset_index == 0 else "01"
             probabilities = {"00": zero_probability, excited: 1 - zero_probability}
         else:
-            z_0 = simultaneous_alpha[0] ** m
-            z_1 = simultaneous_alpha[1] ** m
-            z_joint = joint_alpha**m
+            z_0 = simultaneous_alpha[0] ** sequence_length
+            z_1 = simultaneous_alpha[1] ** sequence_length
+            z_joint = joint_alpha**sequence_length
             probabilities = {
                 "00": (1 + z_0 + z_1 + z_joint) / 4,
                 "01": (1 + z_0 - z_1 - z_joint) / 4,
@@ -187,9 +187,9 @@ def _analyze_known_decays(
     """Run the public analysis path on exact synthetic decay data."""
     shots = 1_000_000
     benchmark = SimultaneousRB(
-        m_list=[1, 2, 4, 8, 16, 32],
+        sequence_lengths=[1, 2, 4, 8, 16, 32],
         subsets=[[0], [1]],
-        circs_per_m=1,
+        circuits_per_sequence_length=1,
         seed=23,
     )
     benchmark.generate_circuits()
@@ -232,8 +232,8 @@ def test_independent_noise_has_no_addressability_or_correlation_penalty():
 
     figure, axes = plt.subplots()
     benchmark.plot(axes)
-    assert axes.get_xlabel() == r"$m$"
-    assert axes.get_ylabel() == r"$p_0$"
+    assert axes.get_xlabel() == r"$\text{Sequence Length}, m$"
+    assert axes.get_ylabel() == "Survival Probability, $p_0$"
     plt.close(figure)
 
 

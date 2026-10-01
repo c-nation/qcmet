@@ -25,14 +25,19 @@ def test_raise_error_invalid_gate():
         ValueError, match="target_clifford is not a valid Clifford gate."
     ):
         qcm.CliffordRB(
-            m_list=[10], circs_per_m=1, qubits=1, target_clifford=non_clifford
+            sequence_lengths=[10],
+            circuits_per_sequence_length=1,
+            qubits=1,
+            target_clifford=non_clifford,
         )
 
 
 @pytest.mark.parametrize("qubits,identity", [(1, 2), (2, 4)])
 def test_circ_operator(qubits, identity):
     """Verify that the total operations acting on CliffordRB circuits are equal to the identity operator."""
-    experiment = qcm.CliffordRB(m_list=[0, 20, 40], circs_per_m=1, qubits=qubits)
+    experiment = qcm.CliffordRB(
+        sequence_lengths=[0, 20, 40], circuits_per_sequence_length=1, qubits=qubits
+    )
     experiment.generate_circuits()
     circs = experiment.circuits
     circ = circs[-1]
@@ -46,7 +51,9 @@ def test_circ_operator(qubits, identity):
 @pytest.mark.parametrize("qubits,m_max", [(1, 20), (2, 20)])
 def test_num_gates(qubits, m_max):
     """Verify that the correct number of clifford gates are applied to the CliffordRB circuit."""
-    experiment = qcm.CliffordRB(m_list=[0, 20], circs_per_m=1, qubits=qubits)
+    experiment = qcm.CliffordRB(
+        sequence_lengths=[0, 20], circuits_per_sequence_length=1, qubits=qubits
+    )
     experiment.generate_circuits()
     circs = experiment.circuits
     circ = circs[-1]
@@ -61,7 +68,7 @@ def test_num_gates(qubits, m_max):
 def test_perfect_emulator(qubits, ground_state_0s):
     """Verify that all measurements of the CliffordRB circuit are in the ground state when running the circuit on a noisless device."""
     experiment = qcm.CliffordRB(
-        m_list=[0, 20, 40, 60, 80, 100], circs_per_m=2, qubits=qubits
+        sequence_lengths=[0, 20, 40, 60, 80, 100], circuits_per_sequence_length=2, qubits=qubits
     )
     experiment.generate_circuits()
     ideal_sim = qcm.IdealSimulator()
@@ -78,7 +85,7 @@ def test_perfect_emulator(qubits, ground_state_0s):
 def test_analyze_ideal(qubits, average_gate_error):
     """Verify that analyze() computes an average gate error of 0 when running the circuit on a noiseless device."""
     experiment = qcm.CliffordRB(
-        m_list=[0, 20, 40, 60, 80, 100], circs_per_m=2, qubits=qubits
+        sequence_lengths=[0, 20, 40, 60, 80, 100], circuits_per_sequence_length=2, qubits=qubits
     )
     experiment.generate_circuits()
     ideal_sim = qcm.IdealSimulator()
@@ -91,7 +98,9 @@ def test_analyze_ideal(qubits, average_gate_error):
 def test_analyze_noisy(qubits, zero_gate_error):
     """Verify that analyze() computes an non-zero average gate error when running the circuit on a noisy device."""
     experiment = qcm.CliffordRB(
-        m_list=[0, 20, 50, 100, 200, 4000, 1000], circs_per_m=2, qubits=qubits
+        sequence_lengths=[0, 20, 50, 100, 200, 4000, 1000],
+        circuits_per_sequence_length=2,
+        qubits=qubits,
     )
     experiment.generate_circuits()
     dummy_sim = qcm.NoisySimulator()
@@ -103,7 +112,7 @@ def test_analyze_noisy(qubits, zero_gate_error):
 def test_plot():
     """Verify plot function creates a plot with correct axes labels."""
     experiment = qcm.CliffordRB(
-        m_list=[0, 20, 40, 60, 80, 100], circs_per_m=2, qubits=2
+        sequence_lengths=[0, 20, 40, 60, 80, 100], circuits_per_sequence_length=2, qubits=2
     )
     experiment.generate_circuits()
     dummy_sim = qcm.NoisySimulator()
@@ -111,8 +120,8 @@ def test_plot():
     experiment.analyze()
     fig, ax = plt.subplots()
     experiment._plot(axes=ax)
-    assert ax.get_xlabel() == r"$m$"
-    assert ax.get_ylabel() == r"$p_0$"
+    assert ax.get_xlabel() == r"$\text{Sequence Length}, m$"
+    assert ax.get_ylabel() == "Survival Probability, $p_0$"
 
 
 @pytest.mark.parametrize("qubits", [(1), (2)])
@@ -122,8 +131,8 @@ def test_with_target_gate(qubits):
     circ = QuantumCircuit(q_reg)
     circ.x(0)
     experiment = qcm.CliffordRB(
-        m_list=[10, 50, 100, 150, 200, 400, 600],
-        circs_per_m=3,
+        sequence_lengths=[10, 50, 100, 150, 200, 400, 600],
+        circuits_per_sequence_length=3,
         qubits=qubits,
         target_clifford=circ,
     )
@@ -148,8 +157,8 @@ def test_result_with_known_error():
     all_gate_noise.add_all_qubit_quantum_error(error_2q, ["cx"], warnings=False)
 
     experiment = qcm.CliffordRB(
-        m_list=[0, 1, 2, 3, 5, 10, 15, 20, 30, 50, 70, 100, 200, 300, 400, 500],
-        circs_per_m=5,
+        sequence_lengths=[0, 1, 2, 3, 5, 10, 15, 20, 30, 50, 70, 100, 200, 300, 400, 500],
+        circuits_per_sequence_length=5,
         qubits=1,
     )
     experiment.generate_circuits()

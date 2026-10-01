@@ -32,9 +32,9 @@ class InterleavedRB(BaseBenchmark):
 
     def __init__(
         self,
-        m_list: List[int],
+        sequence_lengths: List[int],
         target_clifford: QuantumCircuit,
-        circs_per_m: int = 5,
+        circuits_per_sequence_length: int = 5,
         qubits: int | List[int] = 1,
         save_path: str | Path | FileManager | None = None,
     ):
@@ -43,8 +43,10 @@ class InterleavedRB(BaseBenchmark):
         CliffordRB(interleaved) and CliffordRB(non-interleaved) experiment instances are constructed.
 
         Args:
-            m_list (list): The list of sequence lengths to run the benchmark on.
-            circs_per_m (int): The number of circuits generated for a given sequence length m.
+            sequence_lengths (list): The numbers of random Clifford gates in each
+                benchmark sequence.
+            circuits_per_sequence_length (int): The number of circuits generated for
+                each sequence length.
             qubits (int | List[int]): The number of qubits as either a list of qubit
                 indices or int specifying number of qubits.
             target_clifford (QuantumCircuit): QuantumCircuit containing only the target Clifford gate.
@@ -53,8 +55,8 @@ class InterleavedRB(BaseBenchmark):
 
         """
         super().__init__("InterleavedRB", qubits, save_path)
-        self.config["m_list"] = m_list
-        self.config["circs_per_m"] = circs_per_m
+        self.config["sequence_lengths"] = sequence_lengths
+        self.config["circuits_per_sequence_length"] = circuits_per_sequence_length
 
         if target_clifford is None:
             raise ValueError("target Clifford needs to be specified.")
@@ -71,17 +73,25 @@ class InterleavedRB(BaseBenchmark):
             irb_save_path = None
 
         self.rb_experiment = CliffordRB(
-            m_list, circs_per_m, qubits, target_clifford=None, save_path=rb_save_path
+            sequence_lengths,
+            circuits_per_sequence_length,
+            qubits,
+            target_clifford=None,
+            save_path=rb_save_path,
         )
         self.irb_experiment = CliffordRB(
-            m_list, circs_per_m, qubits, target_clifford, save_path=irb_save_path
+            sequence_lengths,
+            circuits_per_sequence_length,
+            qubits,
+            target_clifford,
+            save_path=irb_save_path,
         )
 
     def _generate_circuits(self):
         """Generate circuits for interleaved and non-interleaved Clifford randomised benchmarking.
 
         Each circuit is built with the following steps:
-            1. Apply a sequence of m randomly selected Clifford gates.
+            1. Apply a sequence of randomly selected Clifford gates.
             2. Apply a final gate which is the inverse of all previous Clifford gates.
             3. Measure all qubits.
 
@@ -172,7 +182,7 @@ class InterleavedRB(BaseBenchmark):
             matplotlib.legend.Legend: Legend for the plot.
 
         """
-        axes.set_xlim((0, max(self.config["m_list"])))
+        axes.set_xlim((0, max(self.config["sequence_lengths"])))
         axes.set_ylim((1 / 2**self.num_qubits - 0.05, 1))
 
         self.rb_experiment._plot(axes)

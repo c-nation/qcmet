@@ -37,8 +37,8 @@ class CliffordRB(BaseBenchmark):
 
     def __init__(
         self,
-        m_list: List[int],
-        circs_per_m: int = 5,
+        sequence_lengths: List[int],
+        circuits_per_sequence_length: int = 5,
         qubits: int | List[int] = 1,
         target_clifford: QuantumCircuit | None = None,
         save_path: str | Path | FileManager | None = None,
@@ -46,8 +46,10 @@ class CliffordRB(BaseBenchmark):
         """Initialize the Clifford randomised benchmark.
 
         Args:
-            m_list (List[int]): The list of sequence lengths to run the benchmark on.
-            circs_per_m (int): The number of circuits generated for a given sequence length m.
+            sequence_lengths (List[int]): The numbers of random Clifford gates in
+                each benchmark sequence.
+            circuits_per_sequence_length (int): The number of circuits generated for
+                each sequence length.
             qubits (int | List[int]): The number of qubits as either a list of qubit
                 indices or int specifying number of qubits.
             target_clifford (QuantumCircuit, optional): QuantumCircuit containing only the
@@ -58,8 +60,8 @@ class CliffordRB(BaseBenchmark):
 
         """
         super().__init__("CliffordRB", qubits=qubits, save_path=save_path)
-        self.config["m_list"] = m_list
-        self.config["circs_per_m"] = circs_per_m
+        self.config["sequence_lengths"] = sequence_lengths
+        self.config["circuits_per_sequence_length"] = circuits_per_sequence_length
 
         if target_clifford is not None:
             self.config["target_clifford"] = [
@@ -76,7 +78,7 @@ class CliffordRB(BaseBenchmark):
         """Generate Clifford randomised benchmarking circuits.
 
         Each circuit is built with the following steps:
-            1. Apply a sequence of m randomly selected Clifford gates.
+            1. Apply a sequence of randomly selected Clifford gates.
             2. Apply a final gate which is the inverse of all previous Clifford gates.
             3. Measure all qubits.
 
@@ -91,12 +93,12 @@ class CliffordRB(BaseBenchmark):
 
         """
         data = []
-        for m in self.config["m_list"]:
-            for _ in range(self.config["circs_per_m"]):
+        for sequence_length in self.config["sequence_lengths"]:
+            for _ in range(self.config["circuits_per_sequence_length"]):
                 q_reg = QuantumRegister(self.num_qubits, name="q")
                 circ = QuantumCircuit(q_reg)
                 # applying clifford gates
-                for _ in range(m):
+                for _ in range(sequence_length):
                     circ = circ & random_clifford_circuit(
                         num_qubits=self.num_qubits, num_gates=1
                     )
@@ -112,20 +114,28 @@ class CliffordRB(BaseBenchmark):
 
                 circ.measure_all()
                 if self.target_clifford is not None:
-                    data.append(self._circ_with_metadata_dict(circ, m=m, type="IRB"))
+                    data.append(
+                        self._circ_with_metadata_dict(
+                            circ, sequence_length=sequence_length, type="IRB"
+                        )
+                    )
                 else:
-                    data.append(self._circ_with_metadata_dict(circ, m=m, type="RB"))
+                    data.append(
+                        self._circ_with_metadata_dict(
+                            circ, sequence_length=sequence_length, type="RB"
+                        )
+                    )
 
         return data
 
     @staticmethod
-    def fit_func(m, alpha, a0, b0):
+    def fit_func(sequence_length, alpha, a0, b0):
         """Exponential decay fit function.
 
          This is used for calculating the average gate error.
 
         Args:
-            m (series): sequence length.
+            sequence_length (series): Number of random Clifford gates in a sequence.
             alpha (float): decay fitting parameter.
             a0 (float): amplitude fitting parameter.
             b0 (float): baseline fitting parameter.
@@ -134,13 +144,13 @@ class CliffordRB(BaseBenchmark):
             ndarray: fitting function datapoints.
 
         """
-        return a0 * alpha**m + b0
+        return a0 * alpha**sequence_length + b0
 
     def _analyze(self):
         """Analyze measurement results average Clifford gate error metric.
 
         Transforms raw counts into survival probabilities, computes the average survival
-        probability for each sequence length m, then calculates the average gate error
+        probability for each sequence length, then calculates the average gate error
         and stores this value in a dictionary.
 
         Returns:
@@ -168,13 +178,15 @@ class CliffordRB(BaseBenchmark):
                 # calculating psurv = 0 if no counts in ground state
 
         av_p_surv_df = (
-            self._experiment_data.groupby("m")["p_survival"].mean().reset_index()
+            self._experiment_data.groupby("sequence_length")["p_survival"]
+            .mean()
+            .reset_index()
         )
         self.p_surv = av_p_surv_df["p_survival"].to_list()
 
         popt, pcov = curve_fit(
             self.fit_func,
-            self.config["m_list"],
+            self.config["sequence_lengths"],
             self.p_surv,
             maxfev=20000,
             bounds=[(0, 0, 0), (1, 1, 1)],
@@ -212,19 +224,21 @@ class CliffordRB(BaseBenchmark):
         if self.target_clifford is None:
             colour = "black"
             type = "RB"
-        elif self.target_clifford is not None:
+        else:
             colour = "green"
             type = "IRB"
 
         axes.plot(
-            self.config["m_list"],
+            self.config["sequence_lengths"],
             self.p_surv,
             linestyle="",
             marker="x",
             c=colour,
             label=f"{self._runtime_params['device'].name} {type} results",
         )
-        fit_xxs = np.linspace(0, (max(self.config["m_list"])) + 1, 1000)
+        fit_xxs = np.linspace(
+            0, (max(self.config["sequence_lengths"])) + 1, 1000
+        )
 
         axes.plot(
             fit_xxs,
@@ -232,11 +246,11 @@ class CliffordRB(BaseBenchmark):
             linestyle="--",
             marker="",
             c=colour,
-            label="Fitted equation",
+            label="Fit: error rate ={:.6f}".format(self.avg_gate_err),
         )
-        axes.set_xlim((0, max(self.config["m_list"])))
+        axes.set_xlim((0, max(self.config["sequence_lengths"])))
         axes.set_ylim((1 / 2**self.num_qubits - 0.05, 1))
-        axes.set_xlabel(r"$m$")
-        axes.set_ylabel(r"$p_0$")
+        axes.set_xlabel(r"$\text{Sequence Length}, m$")
+        axes.set_ylabel(r"Survival Probability, $p_0$")
 
         return axes.legend()
